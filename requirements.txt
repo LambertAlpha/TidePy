@@ -1,0 +1,13 @@
+pandas==2.0.0
+numpy==1.24.3
+matplotlib==3.7.1
+plotly==5.15.0
+dash==2.9.3
+ccxt==3.1.54
+psycopg2-binary==2.9.6
+redis==4.5.5
+sqlalchemy==2.0.15
+asyncio==3.4.3
+aiohttp==3.8.4
+python-dotenv==1.0.0
+backtrader==1.9.78.123

@@ -1,0 +1,94 @@
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 环境变量和敏感信息
+.env
+.env.*
+!.env.example
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# 分发与打包
+dist/
+build/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 单元测试与覆盖率报告
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# 日志文件
+logs/*
+*.log
+*.log.*
+!logs/.gitkeep
+
+# 回测报告与生成的图表
+backtest_report_*.html
+*_visualization_*.html
+equity_curve_*.png
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 临时数据文件
+*.csv
+*.json
+*.pickle
+*.pkl
+data/*
+!data/.gitkeep
+
+# IDE项目文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# macOS系统文件
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Redis数据库文件
+*.rdb
+
+# 临时文件
+tmp/
+temp/
+
+# 自定义Docker配置
+docker-compose.override.yml
+
+# 其他
+.history/
+.pytest_cache/
