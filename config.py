@@ -10,8 +10,8 @@ LOG_LEVEL = "INFO"    # 日誌級別：DEBUG, INFO, WARNING, ERROR, CRITICAL
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
-    "user": "postgres",
-    "password": "password",
+    "user": "lambertlin",  # 您的 macOS 用户名
+    "password": "",        # 留空，因为通常不需要密码
     "database": "tidepy"
 }
 
