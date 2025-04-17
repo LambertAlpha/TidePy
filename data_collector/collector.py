@@ -36,7 +36,7 @@ class DataCollector:
             logger.error(f"初始化交易所失敗: {str(e)}")
             raise
     
-    def collect_market_data(self, symbols=None):
+    def collect_market_data(self,         symbols = ['ETH/USDT', 'BTC/USDT']):
         """
         採集市場價格、深度數據
         
@@ -64,7 +64,7 @@ class DataCollector:
                     'last_price': ticker['last'],
                     'bid': ticker['bid'],
                     'ask': ticker['ask'],
-                    'volume_24h': ticker['volume'],
+                    'volume_24h': ticker['quoteVolume'],
                     'price_change_24h': ticker['percentage'],
                     'best_bid_size': orderbook['bids'][0][1] if len(orderbook['bids']) > 0 else 0,
                     'best_ask_size': orderbook['asks'][0][1] if len(orderbook['asks']) > 0 else 0,

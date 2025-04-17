@@ -99,6 +99,7 @@ class DBManager:
                 Column('price', Float),
                 Column('quantity', Float),
                 Column('reason', String(200)),
+                Column('score', Float),  # 添加评分列
                 Column('created_at', DateTime, default=datetime.utcnow)
             )
             

@@ -36,8 +36,8 @@ class SignalGenerator:
                 logger.warning("因子評分為空，無法生成信號")
                 return pd.DataFrame()
             
-            # 篩選符合條件的交易對
-            eligible_tokens = factor_scores[factor_scores['is_eligible']]
+            # 篩選符合條件的交易對（總分大於0的）
+            eligible_tokens = factor_scores[factor_scores['total_score'] > 0]
             
             if eligible_tokens.empty:
                 logger.warning("沒有符合條件的交易對，無法生成信號")

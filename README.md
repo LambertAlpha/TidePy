@@ -45,11 +45,26 @@ python main.py
 
 ## 技術棧
 
-- Python
-- PostgreSQL和Redis用於數據存儲
-- Pandas和NumPy用於數據處理
-- Matplotlib和Dash/Plotly用於數據可視化
-- CCXT庫用於交易所API整合
+- Python 3.10+
+- PostgreSQL和Redis用於數據存儲和快取
+- Pandas和NumPy用於數據分析和處理
+- Matplotlib和Dash/Plotly用於數據可視化和監控儀表板
+- CCXT庫用於多交易所API整合
+- AsyncIO和aiohttp用於非阻塞並發操作
+- SQLAlchemy用於數據庫ORM
+- Backtrader用於策略回測
+
+## 关于PostgerSQL数据库查询
+因子计算结果不会储存在数据库，会在终端打印出来；
+
+-- 查看市场数据
+SELECT * FROM market_data ORDER BY timestamp DESC LIMIT 10;
+
+-- 查看资金费率数据
+SELECT * FROM funding_rate ORDER BY timestamp DESC LIMIT 10;
+
+-- 查看交易信号
+SELECT * FROM trade_signal ORDER BY timestamp DESC LIMIT 10;
 
 ## 架構師在量化系統開發中的核心決策
 1. 分析需求 - 交易頻率、資金規模

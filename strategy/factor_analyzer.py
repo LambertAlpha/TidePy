@@ -379,42 +379,48 @@ class FactorAnalyzer:
             DataFrame: 更新後的因子評分
         """
         try:
-            # 檢查必要的因子列是否存在
-            required_factors = [
-                'funding_rate_score', 
-                'liquidity_score', 
-                'market_cap_score', 
-                'pump_pattern_score',
-                'sector_score'
-            ]
+            # 綜合評分 = 各項因子的加權平均
+            # 資金費率因子是強制要求，必須符合要求才能有總分
+            # 這裡我們給資金費率一個較高的權重
             
-            # 確保所有因子列都存在，如果不存在則創建並設為0
-            for factor in required_factors:
-                if factor not in factor_scores.columns:
-                    factor_scores[factor] = 0
+            # 確保所有需要的列都存在
+            required_columns = ['funding_rate_score', 'liquidity_score', 'market_cap_score', 
+                               'pump_pattern_score', 'unlock_progress_score', 'sector_score']
             
-            # 資金費率是硬性條件，必須符合要求
-            factor_scores['is_eligible'] = factor_scores['funding_rate_score'] > 0
+            for col in required_columns:
+                if col not in factor_scores.columns:
+                    factor_scores[col] = 0
             
-            # 計算綜合評分（不包括資金費率，因為它是二元條件）
+            # 計算總分
             factor_scores['total_score'] = (
-                factor_scores['liquidity_score'] * 0.25 +
-                factor_scores['market_cap_score'] * 0.15 +
-                factor_scores['pump_pattern_score'] * 0.35 +
-                factor_scores['sector_score'] * 0.25
+                factor_scores['funding_rate_score'] * 0.4 +
+                factor_scores['liquidity_score'] * 0.3 +
+                factor_scores['market_cap_score'] * 0.1 +
+                factor_scores['pump_pattern_score'] * 0.1 +
+                factor_scores['unlock_progress_score'] * 0.05 +
+                factor_scores['sector_score'] * 0.05
             )
             
-            # 只有符合資金費率要求的交易對才有綜合評分
-            factor_scores.loc[~factor_scores['is_eligible'], 'total_score'] = 0
+            # 如果資金費率不符合要求，總分為0
+            factor_scores.loc[factor_scores['funding_rate_score'] == 0, 'total_score'] = 0
             
-            # 根據綜合評分排序
-            factor_scores = factor_scores.sort_values('total_score', ascending=False)
+            # 過濾出符合最低資金費率要求的交易對
+            qualified_symbols = factor_scores[factor_scores['funding_rate_score'] > 0]['symbol'].tolist()
             
-            logger.info(f"完成綜合因子評分計算，有 {factor_scores['is_eligible'].sum()} 個交易對符合資金費率要求")
+            # 添加详细日志输出
+            for idx, row in factor_scores.iterrows():
+                logger.info(f"因子评分详情 - 交易对: {row['symbol']} - "
+                           f"总分: {row['total_score']:.2f}, "
+                           f"资金费率分数: {row['funding_rate_score']:.2f}, "
+                           f"资金费率: {row.get('funding_rate', 0):.6f}, "
+                           f"流动性分数: {row['liquidity_score']:.2f}, "
+                           f"市值分数: {row['market_cap_score']:.2f}, "
+                           f"拉盘模式分数: {row['pump_pattern_score']:.2f}")
+            
+            logger.info(f"完成綜合因子評分計算，有 {len(qualified_symbols)} 個交易對符合資金費率要求")
             return factor_scores
             
         except Exception as e:
             logger.error(f"計算綜合因子評分失敗: {str(e)}")
             factor_scores['total_score'] = 0
-            factor_scores['is_eligible'] = False
             return factor_scores

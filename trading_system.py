@@ -52,9 +52,14 @@ class TradingSystem:
                 
                 # 1. 採集數據
                 logger.info("開始採集數據...")
-                market_data = self.data_collector.collect_market_data()
-                funding_data = self.data_collector.fetch_funding_rate()
-                token_info = self.data_collector.get_token_info()
+                # 现货交易对（用于市场数据）
+                spot_symbols = ['ETH/USDT', 'BTC/USDT']
+                # 对应的期货合约（用于资金费率）
+                future_symbols = ['ETH/USDT:USDT', 'BTC/USDT:USDT']
+                
+                market_data = self.data_collector.collect_market_data(symbols=spot_symbols)
+                funding_data = self.data_collector.fetch_funding_rate(symbols=future_symbols)
+                token_info = self.data_collector.get_token_info(symbols=spot_symbols)
                 
                 # 2. 計算因子和信號
                 logger.info("開始計算因子...")
@@ -64,7 +69,7 @@ class TradingSystem:
                 
                 logger.info("開始生成交易信號...")
                 signals = self.signal_generator.generate_signals(factor_scores)
-                
+
                 # 3. 風險評估
                 logger.info("開始風險評估...")
                 filtered_signals = self.risk_manager.filter_signals(signals)
