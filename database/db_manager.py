@@ -120,6 +120,23 @@ class DBManager:
                 Column('created_at', DateTime, default=datetime.utcnow)
             )
             
+            # 因子評分表
+            self.factor_scores_table = Table(
+                'factor_scores', self.metadata,
+                Column('id', Integer, primary_key=True),
+                Column('symbol', String(50), nullable=False),
+                Column('timestamp', DateTime, nullable=False),
+                Column('total_score', Float),
+                Column('funding_rate_score', Float),
+                Column('funding_rate', Float),
+                Column('liquidity_score', Float),
+                Column('market_cap_score', Float),
+                Column('pump_pattern_score', Float),
+                Column('unlock_progress_score', Float),
+                Column('sector_score', Float),
+                Column('created_at', DateTime, default=datetime.utcnow)
+            )
+            
             # 創建表（如果不存在）
             self.metadata.create_all(self.engine)
             logger.info("數據庫表結構初始化成功")
@@ -372,6 +389,96 @@ class DBManager:
                 
         except Exception as e:
             logger.error(f"保存交易信號失敗: {str(e)}")
+            
+    def save_factor_scores(self, factor_scores_df):
+        """
+        保存因子評分數據到數據庫
+        
+        Args:
+            factor_scores_df: 包含因子評分的DataFrame
+        """
+        try:
+            if factor_scores_df.empty:
+                return
+            
+            # 選取要保存的列（避免保存臨時計算列）
+            columns_to_save = [
+                'symbol', 'timestamp', 'total_score', 'funding_rate_score', 
+                'funding_rate', 'liquidity_score', 'market_cap_score', 
+                'pump_pattern_score', 'unlock_progress_score', 'sector_score'
+            ]
+            
+            # 篩選存在的列
+            save_df = factor_scores_df[
+                [col for col in columns_to_save if col in factor_scores_df.columns]
+            ].copy()
+            
+            # 使用to_sql方法將DataFrame寫入數據庫
+            save_df.to_sql(
+                'factor_scores', 
+                self.engine, 
+                if_exists='append', 
+                index=False,
+                method='multi'
+            )
+            logger.info(f"成功保存了 {len(save_df)} 條因子評分數據")
+            
+        except Exception as e:
+            logger.error(f"保存因子評分數據失敗: {str(e)}")
+            
+    def get_factor_scores(self, symbol=None, start_time=None, end_time=None, limit=100):
+        """
+        從數據庫獲取因子評分數據
+        
+        Args:
+            symbol: 交易對，為None時獲取所有交易對
+            start_time: 開始時間
+            end_time: 結束時間
+            limit: 最大返回記錄數
+            
+        Returns:
+            DataFrame: 包含因子評分的DataFrame
+        """
+        try:
+            query = "SELECT * FROM factor_scores"
+            params = []
+            
+            # 構建WHERE條件
+            conditions = []
+            if symbol:
+                conditions.append("symbol = %s")
+                params.append(symbol)
+                
+            if start_time:
+                conditions.append("timestamp >= %s")
+                params.append(start_time)
+                
+            if end_time:
+                conditions.append("timestamp <= %s")
+                params.append(end_time)
+                
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+                
+            # 添加排序和限制
+            query += " ORDER BY timestamp DESC LIMIT %s"
+            params.append(limit)
+            
+            # 執行查詢
+            conn = self.engine.connect()
+            result = conn.execute(text(query), params)
+            
+            # 轉換為DataFrame
+            df = pd.DataFrame(result.fetchall())
+            if not df.empty:
+                df.columns = result.keys()
+                
+            conn.close()
+            return df
+            
+        except Exception as e:
+            logger.error(f"獲取因子評分數據失敗: {str(e)}")
+            return pd.DataFrame()
             
     def save_position(self, position_df):
         """

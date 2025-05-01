@@ -75,6 +75,9 @@ class FactorAnalyzer:
             # 計算綜合因子評分
             factor_scores = self._calculate_total_score(factor_scores)
             
+            # 將因子評分存儲到數據庫中
+            self._save_factor_scores(factor_scores)
+            
             logger.info(f"成功計算了 {len(factor_scores)} 個交易對的因子評分")
             return factor_scores
             
@@ -424,3 +427,17 @@ class FactorAnalyzer:
             logger.error(f"計算綜合因子評分失敗: {str(e)}")
             factor_scores['total_score'] = 0
             return factor_scores
+    
+    def _save_factor_scores(self, factor_scores):
+        """
+        將因子評分存儲到數據庫中
+        
+        Args:
+            factor_scores: 因子評分DataFrame
+        """
+        try:
+            # 將因子評分存儲到數據庫中
+            self.db_manager.save_factor_scores(factor_scores)
+            logger.info("成功將因子評分存儲到數據庫中")
+        except Exception as e:
+            logger.error(f"存儲因子評分失敗: {str(e)}")
