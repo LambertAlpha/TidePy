@@ -66,13 +66,14 @@ class TradingSystem:
                     else:
                         spot_symbols = available_markets
                         
-                    # 獲取對應的期貨合約（用於資金費率）
-                    future_symbols = [s.replace('/USDT', '/USDT:USDT') for s in spot_symbols]
+                    # 使用與現貨交易對相同的符號獲取資金費率
+                    # 不再嘗試添加 :USDT 後綴，避免無效的交易對符號
+                    future_symbols = spot_symbols.copy()
                     
                 except Exception as e:
                     # 發生異常時使用默認交易對
                     spot_symbols = ['ETH/USDT', 'BTC/USDT']
-                    future_symbols = ['ETH/USDT:USDT', 'BTC/USDT:USDT']
+                    future_symbols = spot_symbols.copy()
                     logger.error(f"獲取交易對時發生錯誤: {str(e)}, 使用默認交易對")
                 
                 # 收集市場數據

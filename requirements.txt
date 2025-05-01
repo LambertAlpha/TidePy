@@ -11,3 +11,4 @@ asyncio==3.4.3
 aiohttp==3.8.4
 python-dotenv==1.0.0
 backtrader==1.9.78.123
+pytz==2023.3

@@ -5,6 +5,8 @@
 import logging
 import ccxt
 import pandas as pd
+import numpy as np
+import time
 from database.db_manager import DBManager
 import config
 
@@ -48,22 +50,25 @@ class DataCollector:
             list: 交易對符號列表
         """
         try:
-            # 獲取所有市場
             markets = self.exchange.fetch_markets()
+            symbols = []
             
-            # 篩選出符合計價幣種的現貨交易對
-            spot_markets = [market['symbol'] for market in markets 
-                          if (not market.get('future', False) 
-                              and not market.get('swap', False)
-                              and market['symbol'].endswith(f'/{quote_currency}'))]
+            for market in markets:
+                # 只獲取現貨交易對且計價幣種匹配的
+                if (not market.get('future', False) and 
+                    not market.get('swap', False) and 
+                    market['symbol'].endswith(f'/{quote_currency}')):
+                    symbols.append(market['symbol'])
+                    
+                    # 限制返回的數量
+                    if len(symbols) >= limit:
+                        break
             
-            # 限制返回數量並日誌記錄
-            result = spot_markets[:limit]
-            logger.info(f"獲取到 {len(result)} 個 {quote_currency} 計價的交易對")
-            return result
+            logger.info(f"成功獲取 {len(symbols)} 個 {quote_currency} 交易對")
+            return symbols
             
         except Exception as e:
-            logger.error(f"獲取可用交易對失敗: {str(e)}")
+            logger.error(f"獲取交易對列表失敗: {str(e)}")
             return []
     
     def collect_market_data(self, symbols=None):
@@ -132,18 +137,35 @@ class DataCollector:
                 symbols = [market['symbol'] for market in markets if 
                           market.get('future', False) or market.get('swap', False)]
             
+            # 首先為所有交易對創建一個基本記錄，資金費率設為NA
+            for symbol in symbols:
+                data = {
+                    'symbol': symbol,
+                    'timestamp': int(time.time() * 1000),  # 當前時間戳
+                    'funding_rate': np.nan,  # 使用 NaN 表示 NA
+                    'next_funding_time': None,
+                }
+                funding_data.append(data)
+            
+            # 然後嘗試從交易所獲取實際的資金費率
+            fetched_symbols = set()
             for symbol in symbols:
                 try:
                     funding_info = self.exchange.fetch_funding_rate(symbol)
-                    data = {
-                        'symbol': symbol,
-                        'timestamp': funding_info['timestamp'],
-                        'funding_rate': funding_info['fundingRate'],
-                        'next_funding_time': funding_info.get('nextFundingTime', None),
-                    }
-                    funding_data.append(data)
+                    # 更新已有的記錄
+                    for item in funding_data:
+                        if item['symbol'] == symbol:
+                            item.update({
+                                'timestamp': funding_info['timestamp'],
+                                'funding_rate': funding_info['fundingRate'],
+                                'next_funding_time': funding_info.get('nextFundingTime', None),
+                            })
+                            fetched_symbols.add(symbol)
+                            break
                 except Exception as e:
                     logger.warning(f"獲取 {symbol} 的資金費率失敗: {str(e)}")
+            
+            logger.info(f"成功獲取 {len(fetched_symbols)} 個交易對的資金費率，{len(symbols) - len(fetched_symbols)} 個交易對的資金費率為 NA")
             
             df = pd.DataFrame(funding_data)
             

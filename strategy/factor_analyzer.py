@@ -75,7 +75,7 @@ class FactorAnalyzer:
             # 計算綜合因子評分
             factor_scores = self._calculate_total_score(factor_scores)
             
-            # 將因子評分存儲到數據庫中
+            # 將因子評分存儲到數據庫中和本地文件
             self._save_factor_scores(factor_scores)
             
             logger.info(f"成功計算了 {len(factor_scores)} 個交易對的因子評分")
@@ -117,16 +117,33 @@ class FactorAnalyzer:
                 how='left'
             )
             
-            # 填充缺失值
+            # 標記資金費率為NA的交易對
+            na_count = factor_scores['funding_rate'].isna().sum()
+            if na_count > 0:
+                logger.info(f"發現 {na_count} 個交易對的資金費率為NA，這些交易對將不參與交易")
+                
+            # 特別處理NA值：設置funding_rate_score為-1表示不交易
+            factor_scores.loc[factor_scores['funding_rate'].isna(), 'funding_rate_score'] = -1
+            
+            # 填充剩餘可能的缺失值為0
             factor_scores['funding_rate'] = factor_scores['funding_rate'].fillna(0)
             
             # 計算資金費率評分：必須為非負，評分為0或1
             min_funding_rate = self.strategy_config['min_funding_rate']
-            factor_scores['funding_rate_score'] = factor_scores['funding_rate'].apply(
+            
+            # 只對funding_rate_score未被設置(-1)的行計算評分
+            mask = factor_scores['funding_rate_score'].isna()
+            factor_scores.loc[mask, 'funding_rate_score'] = factor_scores.loc[mask, 'funding_rate'].apply(
                 lambda x: 1 if x >= min_funding_rate else 0
             )
             
-            logger.info(f"完成資金費率分析，有 {factor_scores['funding_rate_score'].sum()} 個交易對的資金費率符合要求")
+            # 確保所有行都有評分值
+            factor_scores['funding_rate_score'] = factor_scores['funding_rate_score'].fillna(0)
+            
+            qualified_count = (factor_scores['funding_rate_score'] > 0).sum()
+            na_count = (factor_scores['funding_rate_score'] == -1).sum()
+            logger.info(f"完成資金費率分析，有 {qualified_count} 個交易對的資金費率符合要求，{na_count} 個交易對的資金費率為NA")
+            
             return factor_scores
             
         except Exception as e:
@@ -406,10 +423,19 @@ class FactorAnalyzer:
                 factor_scores['sector_score'] * 0.0  # 降低賽道的權重
             )
             
-            # 如果資金費率不符合要求，總分為0
-            factor_scores.loc[factor_scores['funding_rate_score'] == 0, 'total_score'] = 0
+            # 資金費率是NA（-1）的交易對總分設為0，不參與交易
+            na_count = (factor_scores['funding_rate_score'] == -1).sum()
+            if na_count > 0:
+                factor_scores.loc[factor_scores['funding_rate_score'] == -1, 'total_score'] = 0
+                logger.info(f"有 {na_count} 個交易對的資金費率為NA，已設置總分為0，將不參與交易")
             
-            # 過濾出符合最低資金費率要求的交易對
+            # 如果資金費率不符合要求，總分為0
+            no_funding_count = (factor_scores['funding_rate_score'] == 0).sum()
+            if no_funding_count > 0:
+                factor_scores.loc[factor_scores['funding_rate_score'] == 0, 'total_score'] = 0
+                logger.info(f"有 {no_funding_count} 個交易對的資金費率不符合要求，已設置總分為0")
+            
+            # 過濾出符合條件的交易對（資金費率不是NA且符合要求）
             qualified_symbols = factor_scores[factor_scores['funding_rate_score'] > 0]['symbol'].tolist()
             
             # 添加详细日志输出
@@ -432,14 +458,36 @@ class FactorAnalyzer:
     
     def _save_factor_scores(self, factor_scores):
         """
-        將因子評分存儲到數據庫中
+        將因子評分存儲到數據庫中和本地文件
         
         Args:
             factor_scores: 因子評分DataFrame
         """
         try:
-            # 將因子評分存儲到數據庫中
+            # 保存到數據庫
             self.db_manager.save_factor_scores(factor_scores)
             logger.info("成功將因子評分存儲到數據庫中")
+            
+            # 保存到本地文件
+            import os
+            import pytz
+            from datetime import datetime
+            
+            # 創建data目錄（如果不存在）
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            
+            # 獲取中國時區的當前時間
+            china_tz = pytz.timezone('Asia/Shanghai')
+            current_time = datetime.now(china_tz)
+            timestamp = current_time.strftime('%Y%m%d_%H%M%S')
+            
+            # 構建文件名
+            filename = os.path.join(data_dir, f'factor_scores_{timestamp}.csv')
+            
+            # 保存到CSV
+            factor_scores.to_csv(filename, index=False)
+            logger.info(f"成功將因子評分保存到本地文件: {filename}")
+            
         except Exception as e:
             logger.error(f"存儲因子評分失敗: {str(e)}")
