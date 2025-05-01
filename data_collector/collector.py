@@ -36,7 +36,7 @@ class DataCollector:
             logger.error(f"初始化交易所失敗: {str(e)}")
             raise
     
-    def collect_market_data(self,         symbols = ['ETH/USDT', 'BTC/USDT']):
+    def collect_market_data(self, symbols=None):
         """
         採集市場價格、深度數據
         

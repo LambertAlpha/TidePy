@@ -144,6 +144,7 @@ def create_tables():
                     price FLOAT,
                     quantity FLOAT,
                     reason VARCHAR(200),
+                    score FLOAT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
