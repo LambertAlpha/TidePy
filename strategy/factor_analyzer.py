@@ -178,9 +178,11 @@ class FactorAnalyzer:
             )
             
             # 市值評分（假設市值為價格乘以流通量，這裡使用成交量作為近似）
-            min_market_cap = self.strategy_config['min_market_cap']
-            factor_scores['market_cap_score'] = factor_scores['usd_volume'].apply(
-                lambda x: 0 if x < min_market_cap else min(1, x / (10 * min_market_cap))
+            # 修改為優先選擇小市值幣（成交量小於1000M美元的）
+            max_market_cap = 1000000000  # 1000M美元
+            factor_scores['estimated_market_cap'] = factor_scores['usd_volume'] * 10  # 粗略估計市值為日成交量的10倍
+            factor_scores['market_cap_score'] = factor_scores['estimated_market_cap'].apply(
+                lambda x: 1 if x < max_market_cap else 0.2  # 小市值得高分，大市值得低分
             )
             
             logger.info(f"完成流動性分析，有 {(factor_scores['liquidity_score'] > 0).sum()} 個交易對的流動性符合要求")
@@ -397,11 +399,11 @@ class FactorAnalyzer:
             # 計算總分
             factor_scores['total_score'] = (
                 factor_scores['funding_rate_score'] * 0.4 +
-                factor_scores['liquidity_score'] * 0.3 +
-                factor_scores['market_cap_score'] * 0.1 +
-                factor_scores['pump_pattern_score'] * 0.1 +
-                factor_scores['unlock_progress_score'] * 0.05 +
-                factor_scores['sector_score'] * 0.05
+                factor_scores['liquidity_score'] * 0.2 +
+                factor_scores['market_cap_score'] * 0.2 +
+                factor_scores['pump_pattern_score'] * 0.2 +  # 增加拉盤模式的權重
+                factor_scores['unlock_progress_score'] * 0.0 +  # 降低解鎖進度的權重
+                factor_scores['sector_score'] * 0.0  # 降低賽道的權重
             )
             
             # 如果資金費率不符合要求，總分為0

@@ -36,6 +36,36 @@ class DataCollector:
             logger.error(f"初始化交易所失敗: {str(e)}")
             raise
     
+    def get_available_markets(self, quote_currency='USDT', limit=200):
+        """
+        獲取可用的交易對
+        
+        Args:
+            quote_currency: 計價幣種，例如 'USDT'
+            limit: 返回的最大交易對數量
+            
+        Returns:
+            list: 交易對符號列表
+        """
+        try:
+            # 獲取所有市場
+            markets = self.exchange.fetch_markets()
+            
+            # 篩選出符合計價幣種的現貨交易對
+            spot_markets = [market['symbol'] for market in markets 
+                          if (not market.get('future', False) 
+                              and not market.get('swap', False)
+                              and market['symbol'].endswith(f'/{quote_currency}'))]
+            
+            # 限制返回數量並日誌記錄
+            result = spot_markets[:limit]
+            logger.info(f"獲取到 {len(result)} 個 {quote_currency} 計價的交易對")
+            return result
+            
+        except Exception as e:
+            logger.error(f"獲取可用交易對失敗: {str(e)}")
+            return []
+    
     def collect_market_data(self, symbols=None):
         """
         採集市場價格、深度數據

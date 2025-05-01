@@ -52,11 +52,30 @@ class TradingSystem:
                 
                 # 1. 採集數據
                 logger.info("開始採集數據...")
-                # 现货交易对（用于市场数据）
-                spot_symbols = ['ETH/USDT', 'BTC/USDT']
-                # 对应的期货合约（用于资金费率）
-                future_symbols = ['ETH/USDT:USDT', 'BTC/USDT:USDT']
                 
+                # 獲取交易所所有符合USDT計價的交易對
+                try:
+                    # 從交易所獲取所有可用的USDT交易對
+                    available_markets = self.data_collector.get_available_markets(quote_currency='USDT', limit=300)
+                    logger.info(f"從交易所獲取到 {len(available_markets)} 個USDT交易對")
+                    
+                    # 如果獲取的交易對列表為空，使用默認交易對
+                    if not available_markets:
+                        spot_symbols = ['ETH/USDT', 'BTC/USDT']
+                        logger.warning("無法獲取交易對列表，使用默認交易對")
+                    else:
+                        spot_symbols = available_markets
+                        
+                    # 獲取對應的期貨合約（用於資金費率）
+                    future_symbols = [s.replace('/USDT', '/USDT:USDT') for s in spot_symbols]
+                    
+                except Exception as e:
+                    # 發生異常時使用默認交易對
+                    spot_symbols = ['ETH/USDT', 'BTC/USDT']
+                    future_symbols = ['ETH/USDT:USDT', 'BTC/USDT:USDT']
+                    logger.error(f"獲取交易對時發生錯誤: {str(e)}, 使用默認交易對")
+                
+                # 收集市場數據
                 market_data = self.data_collector.collect_market_data(symbols=spot_symbols)
                 funding_data = self.data_collector.fetch_funding_rate(symbols=future_symbols)
                 token_info = self.data_collector.get_token_info(symbols=spot_symbols)
