@@ -31,6 +31,9 @@ class DataCollector:
                 'secret': self.exchange_config['secret'],
                 'timeout': self.exchange_config['timeout'],
                 'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',  # 设置默认市场类型为期货
+                }
             })
             logger.info(f"成功初始化交易所: {self.exchange_config['name']}")
             return exchange
@@ -38,7 +41,7 @@ class DataCollector:
             logger.error(f"初始化交易所失敗: {str(e)}")
             raise
     
-    def get_available_markets(self, quote_currency='USDT', limit=200):
+    def get_available_symbols(self, quote_currency='USDT', limit=200):
         """
         獲取可用的交易對
         
@@ -71,9 +74,47 @@ class DataCollector:
             logger.error(f"獲取交易對列表失敗: {str(e)}")
             return []
     
+    def get_available_futures(self, quote_currency='USDT', limit=200):
+        """
+        獲取可用的永續合約交易對
+        
+        Args:
+            quote_currency: 計價幣種，例如 'USDT'
+            limit: 返回的最大交易對數量
+            
+        Returns:
+            list: 交易對符號列表
+        """
+        try:
+            # 设置市场类型为期货
+            self.exchange.options['defaultType'] = 'future'
+            
+            markets = self.exchange.fetch_markets()
+            symbols = []
+            
+            for market in markets:
+                # 只獲取永續合約交易對(linear 类型,即USDT本位合约)
+                if (market.get('linear', False) and 
+                    market.get('quote', '') == quote_currency and
+                    not market.get('spot', False) and
+                    market.get('active', False)):  # 确保合约是活跃的
+                    
+                    symbols.append(market['symbol'])
+                    
+                    # 限制返回的數量
+                    if len(symbols) >= limit:
+                        break
+            
+            logger.info(f"成功獲取 {len(symbols)} 個 {quote_currency} 永續合約交易對")
+            return symbols
+            
+        except Exception as e:
+            logger.error(f"獲取永續合約交易對列表失敗: {str(e)}")
+            return []
+    
     def collect_market_data(self, symbols=None):
         """
-        採集市場價格、深度數據
+        收集市場數據
         
         Args:
             symbols: 需要收集數據的交易對列表，如果為None則收集所有交易對
@@ -82,38 +123,59 @@ class DataCollector:
             DataFrame: 包含市場數據的DataFrame
         """
         try:
-            if symbols is None:
-                # 如果未指定交易對，則獲取所有可交易的期貨交易對
-                markets = self.exchange.fetch_markets()
-                symbols = [market['symbol'] for market in markets if 
-                           market.get('future', False) or market.get('swap', False)]
+            # 确保设置市场类型为spot
+            self.exchange.options['defaultType'] = 'spot'
             
-            market_data = []
-            for symbol in symbols:
-                ticker = self.exchange.fetch_ticker(symbol)
-                orderbook = self.exchange.fetch_order_book(symbol, limit=20)
+            if symbols is None:
+                # 如果未指定交易對，則獲取所有可交易的USDT交易對
+                symbols = self.get_available_symbols(quote_currency='USDT')
                 
-                data = {
-                    'symbol': symbol,
-                    'timestamp': ticker['timestamp'],
-                    'last_price': ticker['last'],
-                    'bid': ticker['bid'],
-                    'ask': ticker['ask'],
-                    'volume_24h': ticker['quoteVolume'],
-                    'price_change_24h': ticker['percentage'],
-                    'best_bid_size': orderbook['bids'][0][1] if len(orderbook['bids']) > 0 else 0,
-                    'best_ask_size': orderbook['asks'][0][1] if len(orderbook['asks']) > 0 else 0,
-                    'orderbook_depth': len(orderbook['bids']) + len(orderbook['asks'])
-                }
-                market_data.append(data)
+            market_data = []
+            
+            # 记录不可用的交易对
+            unavailable_symbols = []
+            
+            for symbol in symbols:
+                try:
+                    ticker = self.exchange.fetch_ticker(symbol)
+                    ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1d', limit=1)
+                    orderbook = self.exchange.fetch_order_book(symbol, limit=20)
+                    
+                    if ohlcv and len(ohlcv) > 0:
+                        data = {
+                            'symbol': symbol,
+                            'timestamp': ticker['timestamp'],
+                            'last_price': ticker['last'],
+                            'bid': ticker['bid'] if 'bid' in ticker else None,
+                            'ask': ticker['ask'] if 'ask' in ticker else None,
+                            'volume_24h': ticker['quoteVolume'] if 'quoteVolume' in ticker else None,
+                            'price_change_24h': ticker['percentage'] if 'percentage' in ticker else None,
+                            'best_bid_size': orderbook['bids'][0][1] if len(orderbook['bids']) > 0 else 0,
+                            'best_ask_size': orderbook['asks'][0][1] if len(orderbook['asks']) > 0 else 0,
+                            'orderbook_depth': len(orderbook['bids']) + len(orderbook['asks'])
+                        }
+                        market_data.append(data)
+                except Exception as e:
+                    unavailable_symbols.append(symbol)
+                    logger.warning(f"获取交易对 {symbol} 的市场数据失败: {str(e)}")
+                    continue
+            
+            if unavailable_symbols:
+                logger.warning(f"以下 {len(unavailable_symbols)} 个交易对不可用或无法获取数据: {', '.join(unavailable_symbols[:10])}{' 等...' if len(unavailable_symbols) > 10 else ''}")
+            
+            if not market_data:
+                logger.error("所有交易对都无法获取市场数据")
+                return pd.DataFrame()
                 
             df = pd.DataFrame(market_data)
             
             # 保存到數據庫
-            self.db_manager.save_market_data(df)
-            logger.info(f"成功收集了 {len(df)} 個交易對的市場數據")
-            return df
+            if not df.empty:
+                self.db_manager.save_market_data(df)
+                logger.info(f"成功收集了 {len(df)} 個交易對的市場數據")
             
+            return df
+        
         except Exception as e:
             logger.error(f"收集市場數據失敗: {str(e)}")
             return pd.DataFrame()
@@ -129,13 +191,16 @@ class DataCollector:
             DataFrame: 包含資金費率的DataFrame
         """
         try:
+            # 确保设置市场类型为期货
+            self.exchange.options['defaultType'] = 'future'
+            
             funding_data = []
             
             if symbols is None:
                 # 如果未指定交易對，則獲取所有可交易的期貨交易對
-                markets = self.exchange.fetch_markets()
-                symbols = [market['symbol'] for market in markets if 
-                          market.get('future', False) or market.get('swap', False)]
+                symbols = self.get_available_futures(quote_currency='USDT')
+            
+            logger.info(f"开始获取 {len(symbols)} 个交易对的资金费率")
             
             # 首先為所有交易對創建一個基本記錄，資金費率設為NA
             for symbol in symbols:
@@ -151,7 +216,9 @@ class DataCollector:
             fetched_symbols = set()
             for symbol in symbols:
                 try:
+                    # 确保使用期货市场
                     funding_info = self.exchange.fetch_funding_rate(symbol)
+                    
                     # 更新已有的記錄
                     for item in funding_data:
                         if item['symbol'] == symbol:
@@ -161,6 +228,7 @@ class DataCollector:
                                 'next_funding_time': funding_info.get('nextFundingTime', None),
                             })
                             fetched_symbols.add(symbol)
+                            logger.info(f"成功获取 {symbol} 的资金费率: {funding_info['fundingRate']}")
                             break
                 except Exception as e:
                     logger.warning(f"獲取 {symbol} 的資金費率失敗: {str(e)}")

@@ -64,11 +64,14 @@ class FactorAnalyzer:
             # 3. 拉盤模式識別
             factor_scores = self._analyze_pump_patterns(factor_scores, market_data)
             
-            # 4. 解鎖進度評估
+            # 4. 市值分析
+            factor_scores = self._analyze_market_cap(factor_scores, market_data)
+            
+            # 5. 解鎖進度評估
             if not token_info.empty:
                 factor_scores = self._analyze_unlock_progress(factor_scores, token_info)
             
-            # 5. 賽道分類
+            # 6. 賽道分類
             if not token_info.empty:
                 factor_scores = self._analyze_sector(factor_scores, token_info)
             
@@ -105,49 +108,125 @@ class FactorAnalyzer:
                 factor_scores['funding_rate'] = 0
                 return factor_scores
             
-            # 獲取每個交易對的最新資金費率
-            latest_funding = funding_data.sort_values('timestamp', ascending=False)
-            latest_funding = latest_funding.drop_duplicates('symbol', keep='first')
+            # 处理币安永续合约符号格式
+            # 在资金费率数据中，币安的永续合约符号格式是'BTC/USDT:USDT'
+            # 在因子评分数据中，我们使用的是'BTC/USDT'
+            # 需要转换以确保正确匹配
+            logger.info(f"處理資金費率數據: {funding_data.shape[0]} 條記錄")
             
-            # 合併資金費率數據到因子評分表
-            factor_scores = pd.merge(
-                factor_scores, 
-                latest_funding[['symbol', 'funding_rate']], 
-                on='symbol', 
+            # 输出资金费率数据示例，便于调试
+            if not funding_data.empty:
+                logger.info(f"资金费率数据示例: {funding_data.iloc[0].to_dict()}")
+                logger.info(f"资金费率数据列: {funding_data.columns.tolist()}")
+            
+            funding_data_processed = funding_data.copy()
+            funding_data_processed['base_symbol'] = funding_data_processed['symbol'].apply(
+                lambda x: x.split(':')[0] if ':' in x else x
+            )
+            
+            # 输出转换后的示例
+            if not funding_data_processed.empty:
+                sample = funding_data_processed.iloc[0]
+                logger.info(f"转换后资金费率数据示例: 原符号={sample['symbol']}, 基础符号={sample['base_symbol']}")
+            
+            # 检查是否有非NA的资金费率数据
+            valid_funding_rates = funding_data_processed[~funding_data_processed['funding_rate'].isna()]
+            if valid_funding_rates.empty:
+                logger.warning("所有資金費率數據都為NA，跳過資金費率分析")
+                factor_scores['funding_rate_score'] = 0
+                factor_scores['funding_rate'] = 0
+                return factor_scores
+            
+            logger.info(f"有 {len(valid_funding_rates)} 个交易对有有效的资金费率数据")
+            
+            # 输出因子评分数据示例
+            if not factor_scores.empty:
+                logger.info(f"因子评分数据示例: {factor_scores.iloc[0].to_dict()}")
+                logger.info(f"因子评分数据列: {factor_scores.columns.tolist()}")
+                logger.info(f"因子评分数据符号示例: {factor_scores['symbol'].iloc[0]}")
+            
+            # 获取每个交易对的最新资金费率
+            latest_funding = funding_data_processed.sort_values('timestamp', ascending=False)
+            latest_funding = latest_funding.drop_duplicates('base_symbol', keep='first')
+            
+            # 输出有效的资金费率数据，便于检查
+            for idx, row in latest_funding.iterrows():
+                if not np.isnan(row['funding_rate']):
+                    logger.info(f"交易对 {row['symbol']} (基础符号: {row['base_symbol']}) 的资金费率为 {row['funding_rate']}")
+            
+            # 合并资金费率数据到因子评分表
+            logger.info(f"开始合并资金费率数据，因子评分行数: {len(factor_scores)}, 资金费率行数: {len(latest_funding)}")
+            
+            # 保存合并前的数据副本，用于比较
+            factor_scores_before = factor_scores.copy()
+            
+            # 合并数据，使用left_on和right_on确保正确匹配
+            merged_df = pd.merge(
+                factor_scores,
+                latest_funding[['base_symbol', 'funding_rate']],
+                left_on='symbol',
+                right_on='base_symbol',
                 how='left'
             )
             
-            # 標記資金費率為NA的交易對
-            na_count = factor_scores['funding_rate'].isna().sum()
-            if na_count > 0:
-                logger.info(f"發現 {na_count} 個交易對的資金費率為NA，這些交易對將不參與交易")
-                
-            # 特別處理NA值：設置funding_rate_score為-1表示不交易
-            factor_scores.loc[factor_scores['funding_rate'].isna(), 'funding_rate_score'] = -1
+            # 检查合并结果
+            logger.info(f"合并后数据行数: {len(merged_df)}, 列: {merged_df.columns.tolist()}")
+            logger.info(f"合并前后行数差异: {len(merged_df) - len(factor_scores)}")
             
-            # 填充剩餘可能的缺失值為0
+            # 如果合并导致数据丢失，使用交叉匹配
+            if len(merged_df) < len(factor_scores):
+                logger.warning("合并导致数据丢失，尝试手动匹配...")
+                # 创建映射字典
+                funding_map = {row['base_symbol']: row['funding_rate'] for _, row in latest_funding.iterrows()}
+                
+                # 手动匹配
+                factor_scores['funding_rate'] = factor_scores['symbol'].apply(
+                    lambda x: funding_map.get(x, 0)
+                )
+                logger.info(f"手动匹配后资金费率非零项: {(factor_scores['funding_rate'] != 0).sum()}")
+            else:
+                # 使用合并结果
+                factor_scores = merged_df
+                # 确保funding_rate存在
+                if 'funding_rate' not in factor_scores.columns and 'funding_rate_y' in factor_scores.columns:
+                    factor_scores['funding_rate'] = factor_scores['funding_rate_y']
+                    factor_scores = factor_scores.drop('funding_rate_y', axis=1)
+                if 'funding_rate_x' in factor_scores.columns:
+                    factor_scores = factor_scores.drop('funding_rate_x', axis=1)
+            
+            # 检查数据是否成功合并
+            non_zero_count = (factor_scores['funding_rate'] != 0).sum()
+            logger.info(f"资金费率非零值数量: {non_zero_count}")
+            
+            # 填充可能的NA值
             factor_scores['funding_rate'] = factor_scores['funding_rate'].fillna(0)
             
-            # 計算資金費率評分：必須為非負，評分為0或1
+            # 计算资金费率评分
             min_funding_rate = self.strategy_config['min_funding_rate']
-            
-            # 只對funding_rate_score未被設置(-1)的行計算評分
-            mask = factor_scores['funding_rate_score'].isna()
-            factor_scores.loc[mask, 'funding_rate_score'] = factor_scores.loc[mask, 'funding_rate'].apply(
+            factor_scores['funding_rate_score'] = factor_scores['funding_rate'].apply(
                 lambda x: 1 if x >= min_funding_rate else 0
             )
             
-            # 確保所有行都有評分值
-            factor_scores['funding_rate_score'] = factor_scores['funding_rate_score'].fillna(0)
+            # 标记资金费率为0的交易对
+            zero_rates = (factor_scores['funding_rate'] == 0).sum()
+            if zero_rates > 0:
+                logger.info(f"有 {zero_rates} 个交易对的资金费率为0，将不参与交易")
+                factor_scores.loc[factor_scores['funding_rate'] == 0, 'funding_rate_score'] = -1
             
             qualified_count = (factor_scores['funding_rate_score'] > 0).sum()
             na_count = (factor_scores['funding_rate_score'] == -1).sum()
-            logger.info(f"完成資金費率分析，有 {qualified_count} 個交易對的資金費率符合要求，{na_count} 個交易對的資金費率為NA")
+            logger.info(f"完成資金費率分析，有 {qualified_count} 個交易對的資金費率符合要求，{na_count} 個交易對的資金費率為NA或0")
+            
+            # 删除临时列
+            if 'base_symbol' in factor_scores.columns:
+                factor_scores = factor_scores.drop('base_symbol', axis=1)
             
             return factor_scores
             
         except Exception as e:
             logger.error(f"分析資金費率因子失敗: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             factor_scores['funding_rate_score'] = 0
             factor_scores['funding_rate'] = 0
             return factor_scores
@@ -167,55 +246,78 @@ class FactorAnalyzer:
             if market_data.empty:
                 logger.warning("無市場數據，跳過流動性分析")
                 factor_scores['liquidity_score'] = 0
-                factor_scores['market_cap_score'] = 0
                 return factor_scores
             
-            # 獲取每個交易對的最新市場數據
+            # 檢查市場數據列名
+            logger.info(f"流動性分析 - 市場數據列名: {market_data.columns.tolist()}")
+            
+            # 确保必要的列存在
+            price_col = None
+            if 'last_price' in market_data.columns:
+                price_col = 'last_price'
+            elif 'last' in market_data.columns:
+                price_col = 'last'
+            elif 'close' in market_data.columns:
+                price_col = 'close'
+            
+            volume_col = None
+            if 'volume_24h' in market_data.columns:
+                volume_col = 'volume_24h'
+            elif 'quoteVolume' in market_data.columns:
+                volume_col = 'quoteVolume'
+            elif 'baseVolume' in market_data.columns:
+                volume_col = 'baseVolume'
+            
+            if not price_col or not volume_col:
+                logger.error(f"流動性分析 - 無法找到必要的市場數據列: 價格列={price_col}, 成交量列={volume_col}")
+                factor_scores['liquidity_score'] = 0
+                return factor_scores
+            
+            # 獲取最新的市場數據
             latest_market = market_data.sort_values('timestamp', ascending=False)
             latest_market = latest_market.drop_duplicates('symbol', keep='first')
             
-            # 計算美元成交量
-            latest_market['usd_volume'] = latest_market['last_price'] * latest_market['volume_24h']
+            # 添加成交額列
+            latest_market['turnover'] = latest_market[price_col] * latest_market[volume_col]
             
-            # 合併流動性數據到因子評分表
-            factor_scores = pd.merge(
-                factor_scores, 
-                latest_market[['symbol', 'usd_volume', 'last_price', 'volume_24h']], 
-                on='symbol', 
-                how='left'
+            # 將流動性數據合並到因子評分表
+            market_liquidity = latest_market[['symbol', 'turnover', price_col, volume_col]]
+            factor_scores = pd.merge(factor_scores, market_liquidity, on='symbol', how='left')
+            
+            # 列印每個交易對的流動性數據，以便調試
+            for idx, row in factor_scores.iterrows():
+                logger.info(f"流動性數據 - 交易對: {row['symbol']}, "
+                          f"價格: {row.get(price_col, 0)}, "
+                          f"成交量: {row.get(volume_col, 0)}, "
+                          f"成交額: {row.get('turnover', 0)}")
+            
+            # 計算流動性分數 - 確保有足夠的日成交額
+            min_turnover = 1000000  # 最低日成交額：100萬美元
+            factor_scores['liquidity_score'] = factor_scores['turnover'].apply(
+                lambda x: 1 if pd.notna(x) and x >= min_turnover else 0
             )
             
-            # 填充缺失值
-            factor_scores['usd_volume'] = factor_scores['usd_volume'].fillna(0)
+            # 檢查是否成功計算了流動性分數
+            if 'liquidity_score' not in factor_scores.columns:
+                logger.error("流動性分數計算失敗，列不存在")
+                factor_scores['liquidity_score'] = 0
             
-            # 計算流動性評分：標準化後的美元成交量
-            min_liquidity = self.strategy_config['min_liquidity']
-            factor_scores['liquidity_score'] = factor_scores['usd_volume'].apply(
-                lambda x: 0 if x < min_liquidity else min(1, x / (10 * min_liquidity))
-            )
+            # 輸出分析結果
+            liquid_count = (factor_scores['liquidity_score'] > 0).sum()
+            logger.info(f"完成流動性分析，有 {liquid_count} 個交易對流動性足夠")
             
-            # 市值評分（假設市值為價格乘以流通量，這裡使用成交量作為近似）
-            # 修改為優先選擇小市值幣（成交量小於1000M美元的）
-            max_market_cap = 1000000000  # 1000M美元
-            factor_scores['estimated_market_cap'] = factor_scores['usd_volume'] * 10  # 粗略估計市值為日成交量的10倍
-            factor_scores['market_cap_score'] = factor_scores['estimated_market_cap'].apply(
-                lambda x: 1 if x < max_market_cap else 0.2  # 小市值得高分，大市值得低分
-            )
-            
-            logger.info(f"完成流動性分析，有 {(factor_scores['liquidity_score'] > 0).sum()} 個交易對的流動性符合要求")
             return factor_scores
             
         except Exception as e:
             logger.error(f"分析流動性因子失敗: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             factor_scores['liquidity_score'] = 0
-            factor_scores['market_cap_score'] = 0
             return factor_scores
     
     def _analyze_pump_patterns(self, factor_scores, market_data):
         """
-        分析拉盤模式
-        
-        策略要求：考慮是否拉過盤（拉過盤做空成功率會大一些）
+        分析拉盤模式因子
         
         Args:
             factor_scores: 因子評分DataFrame
@@ -230,54 +332,212 @@ class FactorAnalyzer:
                 factor_scores['pump_pattern_score'] = 0
                 return factor_scores
             
-            # 按交易對和時間排序
-            market_data_sorted = market_data.sort_values(['symbol', 'timestamp'])
+            # 檢查市場數據列名
+            logger.info(f"拉盤模式分析 - 市場數據列名: {market_data.columns.tolist()}")
             
-            # 計算價格變化率
-            market_data_sorted['price_change'] = market_data_sorted.groupby('symbol')['last_price'].pct_change()
+            # 确保必要的列存在
+            price_col = None
+            if 'last_price' in market_data.columns:
+                price_col = 'last_price'
+            elif 'last' in market_data.columns:
+                price_col = 'last'
+            elif 'close' in market_data.columns:
+                price_col = 'close'
             
-            # 識別拉盤模式（簡單示例：過去24小時價格上漲超過20%）
-            pump_patterns = []
-            for symbol in factor_scores['symbol']:
-                symbol_data = market_data_sorted[market_data_sorted['symbol'] == symbol]
-                
-                if len(symbol_data) < 2:
-                    pump_patterns.append({'symbol': symbol, 'pump_pattern_score': 0})
-                    continue
-                
-                # 拉盤判斷指標1：短期內價格快速上漲
-                max_price_change = symbol_data['price_change'].max()
-                
-                # 拉盤判斷指標2：成交量突然放大
-                max_volume = symbol_data['volume_24h'].max()
-                avg_volume = symbol_data['volume_24h'].mean()
-                volume_ratio = max_volume / avg_volume if avg_volume > 0 else 1
-                
-                # 綜合評分
-                pump_score = 0
-                if max_price_change > 0.2:  # 單日漲幅超過20%
-                    pump_score += 0.5
-                if volume_ratio > 3:  # 成交量放大3倍以上
-                    pump_score += 0.5
-                
-                pump_patterns.append({
-                    'symbol': symbol, 
-                    'pump_pattern_score': min(1, pump_score)
-                })
+            volume_col = None
+            if 'volume_24h' in market_data.columns:
+                volume_col = 'volume_24h'
+            elif 'quoteVolume' in market_data.columns:
+                volume_col = 'quoteVolume'
+            elif 'baseVolume' in market_data.columns:
+                volume_col = 'baseVolume'
             
-            # 合併拉盤模式評分到因子評分表
-            pump_patterns_df = pd.DataFrame(pump_patterns)
-            factor_scores = pd.merge(factor_scores, pump_patterns_df, on='symbol', how='left')
+            if not price_col or not volume_col:
+                logger.error(f"拉盤模式分析 - 無法找到必要的市場數據列: 價格列={price_col}, 成交量列={volume_col}")
+                factor_scores['pump_pattern_score'] = 0
+                return factor_scores
+            
+            # 获取最新市场数据
+            all_symbols = factor_scores['symbol'].unique().tolist()
+            logger.info(f"需要分析拉盘模式的交易对数量: {len(all_symbols)}")
+            
+            # 创建结果列表
+            pump_results = []
+            
+            for symbol in all_symbols:
+                try:
+                    # 获取该交易对的市场数据
+                    symbol_data = market_data[market_data['symbol'] == symbol].sort_values('timestamp')
+                    
+                    if len(symbol_data) < 2:
+                        logger.warning(f"交易对 {symbol} 的市场数据不足，无法分析拉盘模式")
+                        pump_results.append({
+                            'symbol': symbol,
+                            'pump_pattern_score': 0
+                        })
+                        continue
+                    
+                    # 获取最新和前一个时间点的数据
+                    latest = symbol_data.iloc[-1]
+                    previous = symbol_data.iloc[-2]
+                    
+                    # 计算价格变化率和成交量变化率
+                    price_change = 0
+                    volume_change = 0
+                    
+                    if previous[price_col] > 0:
+                        price_change = (latest[price_col] - previous[price_col]) / previous[price_col]
+                    
+                    if previous[volume_col] > 0:
+                        volume_change = (latest[volume_col] - previous[volume_col]) / previous[volume_col]
+                    
+                    # 判断是否是拉盘模式：价格上涨超过10%且成交量上涨超过100%
+                    is_pump = price_change > 0.1 and volume_change > 1.0
+                    
+                    logger.info(f"交易对 {symbol} 拉盘分析结果: "
+                               f"价格变化率={price_change:.2f}, "
+                               f"成交量变化率={volume_change:.2f}, "
+                               f"是否拉盘={is_pump}")
+                    
+                    pump_results.append({
+                        'symbol': symbol,
+                        'pump_pattern_score': 1 if is_pump else 0
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"分析交易对 {symbol} 拉盘模式时发生错误: {str(e)}")
+                    pump_results.append({
+                        'symbol': symbol,
+                        'pump_pattern_score': 0
+                    })
+            
+            # 创建拉盘模式数据框
+            pump_df = pd.DataFrame(pump_results)
+            
+            # 合并到因子评分表
+            factor_scores = pd.merge(
+                factor_scores,
+                pump_df,
+                on='symbol',
+                how='left'
+            )
             
             # 填充缺失值
             factor_scores['pump_pattern_score'] = factor_scores['pump_pattern_score'].fillna(0)
             
-            logger.info(f"完成拉盤模式分析，有 {(factor_scores['pump_pattern_score'] > 0.5).sum()} 個交易對符合拉盤模式")
+            # 检查是否成功计算了拉盘模式分数
+            if 'pump_pattern_score' not in factor_scores.columns:
+                logger.error("拉盘模式分数计算失败，列不存在")
+                factor_scores['pump_pattern_score'] = 0
+            
+            # 输出分析结果
+            pump_count = (factor_scores['pump_pattern_score'] > 0).sum()
+            logger.info(f"完成拉盘模式分析，有 {pump_count} 个交易对符合拉盘模式")
+            
             return factor_scores
             
         except Exception as e:
-            logger.error(f"分析拉盤模式因子失敗: {str(e)}")
+            logger.error(f"分析拉盘模式因子失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             factor_scores['pump_pattern_score'] = 0
+            return factor_scores
+    
+    def _analyze_market_cap(self, factor_scores, market_data):
+        """
+        分析市值因子
+        
+        Args:
+            factor_scores: 因子評分DataFrame
+            market_data: 市場數據
+            
+        Returns:
+            DataFrame: 更新後的因子評分
+        """
+        try:
+            if market_data.empty:
+                logger.warning("無市場數據，跳過市值分析")
+                factor_scores['market_cap_score'] = 0
+                return factor_scores
+            
+            # 檢查市場數據列名
+            logger.info(f"市值分析 - 市場數據列名: {market_data.columns.tolist()}")
+            
+            # 确保必要的列存在
+            price_col = None
+            if 'last_price' in market_data.columns:
+                price_col = 'last_price'
+            elif 'last' in market_data.columns:
+                price_col = 'last'
+            elif 'close' in market_data.columns:
+                price_col = 'close'
+            
+            volume_col = None
+            if 'volume_24h' in market_data.columns:
+                volume_col = 'volume_24h'
+            elif 'quoteVolume' in market_data.columns:
+                volume_col = 'quoteVolume'
+            elif 'baseVolume' in market_data.columns:
+                volume_col = 'baseVolume'
+            
+            if not price_col or not volume_col:
+                logger.error(f"市值分析 - 無法找到必要的市場數據列: 價格列={price_col}, 成交量列={volume_col}")
+                factor_scores['market_cap_score'] = 0
+                return factor_scores
+            
+            # 获取最新的市场数据
+            latest_market = market_data.sort_values('timestamp', ascending=False)
+            latest_market = latest_market.drop_duplicates('symbol', keep='first')
+            
+            # 如果市场数据中已有turnover，则直接使用，否则计算
+            if 'turnover' not in latest_market.columns:
+                latest_market['turnover'] = latest_market[price_col] * latest_market[volume_col]
+            
+            # 合并到因子评分表 - 只合并我们需要的列
+            latest_market_subset = latest_market[['symbol', 'turnover']].copy()
+            
+            # 仅合并turnover列，避免与之前合并的列冲突
+            if 'turnover' not in factor_scores.columns:
+                factor_scores = pd.merge(
+                    factor_scores,
+                    latest_market_subset,
+                    on='symbol',
+                    how='left'
+                )
+                
+            # 打印调试信息
+            for idx, row in factor_scores.iterrows():
+                logger.info(f"市值数据 - 交易对: {row['symbol']}, 成交额: {row.get('turnover', 0)}")
+            
+            # 粗略估计市值：日交易量的10倍
+            factor_scores['estimated_market_cap'] = factor_scores['turnover'] * 10
+            
+            # 填充缺失值
+            factor_scores['estimated_market_cap'] = factor_scores['estimated_market_cap'].fillna(0)
+            
+            # 计算市值分数：优先选择小市值币种
+            max_market_cap = 1000000000  # 10亿美元
+            factor_scores['market_cap_score'] = factor_scores['estimated_market_cap'].apply(
+                lambda x: 1 if pd.notna(x) and x > 0 and x < max_market_cap else 0.2  # 小市值得高分，大市值得低分
+            )
+            
+            # 检查是否成功计算了市值分数
+            if 'market_cap_score' not in factor_scores.columns:
+                logger.error("市值分数计算失败，列不存在")
+                factor_scores['market_cap_score'] = 0
+            
+            # 输出分析结果
+            small_cap_count = (factor_scores['market_cap_score'] >= 1).sum()
+            large_cap_count = (factor_scores['market_cap_score'] < 1).sum()
+            logger.info(f"完成市值分析，有 {small_cap_count} 个小市值交易对，{large_cap_count} 个大市值交易对")
+            
+            return factor_scores
+            
+        except Exception as e:
+            logger.error(f"分析市值因子失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            factor_scores['market_cap_score'] = 0
             return factor_scores
     
     def _analyze_unlock_progress(self, factor_scores, token_info):

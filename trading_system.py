@@ -56,8 +56,14 @@ class TradingSystem:
                 # 獲取交易所所有符合USDT計價的交易對
                 try:
                     # 從交易所獲取所有可用的USDT交易對
-                    available_markets = self.data_collector.get_available_markets(quote_currency='USDT', limit=300)
-                    logger.info(f"從交易所獲取到 {len(available_markets)} 個USDT交易對")
+                    test_mode = False
+                    if test_mode:
+                        # 仅使用4个主要交易对进行测试
+                        available_markets = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT']
+                        logger.info(f"测试模式：使用 {len(available_markets)} 个指定的USDT交易对")
+                    else:
+                        available_markets = self.data_collector.get_available_symbols(quote_currency='USDT', limit=300)
+                        logger.info(f"從交易所獲取到 {len(available_markets)} 個USDT交易對")
                     
                     # 如果獲取的交易對列表為空，使用默認交易對
                     if not available_markets:
@@ -66,14 +72,21 @@ class TradingSystem:
                     else:
                         spot_symbols = available_markets
                         
-                    # 使用與現貨交易對相同的符號獲取資金費率
-                    # 不再嘗試添加 :USDT 後綴，避免無效的交易對符號
-                    future_symbols = spot_symbols.copy()
+                    # 获取永续合约交易对以获取资金费率
+                    futures_markets = self.data_collector.get_available_futures(quote_currency='USDT', limit=300)
+                    logger.info(f"從交易所獲取到 {len(futures_markets)} 個USDT永續合約交易對")
+                    
+                    # 如果獲取的永续合约交易對列表為空，使用默認交易對
+                    if not futures_markets:
+                        future_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT']  # 币安永续合约的格式
+                        logger.warning("無法獲取永續合約交易對列表，使用默認交易對")
+                    else:
+                        future_symbols = futures_markets
                     
                 except Exception as e:
                     # 發生異常時使用默認交易對
                     spot_symbols = ['ETH/USDT', 'BTC/USDT']
-                    future_symbols = spot_symbols.copy()
+                    future_symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT']  # 币安永续合约的格式
                     logger.error(f"獲取交易對時發生錯誤: {str(e)}, 使用默認交易對")
                 
                 # 收集市場數據
