@@ -482,78 +482,117 @@ class FactorAnalyzer:
             # 檢查市場數據列名
             logger.info(f"市值分析 - 市場數據列名: {market_data.columns.tolist()}")
             
-            # 确保必要的列存在
-            price_col = None
-            if 'last_price' in market_data.columns:
-                price_col = 'last_price'
-            elif 'last' in market_data.columns:
-                price_col = 'last'
-            elif 'close' in market_data.columns:
-                price_col = 'close'
+            # 使用CoinGecko API獲取准確市值
+            import requests
+            import time
             
-            volume_col = None
-            if 'volume_24h' in market_data.columns:
-                volume_col = 'volume_24h'
-            elif 'quoteVolume' in market_data.columns:
-                volume_col = 'quoteVolume'
-            elif 'baseVolume' in market_data.columns:
-                volume_col = 'baseVolume'
+            # 獲取所有交易對的符號
+            symbols = factor_scores['symbol'].unique().tolist()
+            market_caps = {}
             
-            if not price_col or not volume_col:
-                logger.error(f"市值分析 - 無法找到必要的市場數據列: 價格列={price_col}, 成交量列={volume_col}")
-                factor_scores['market_cap_score'] = 0
-                return factor_scores
+            for symbol in symbols:
+                try:
+                    # 提取幣種名稱（去掉/USDT等後綴）
+                    base_symbol = symbol.split('/')[0].lower()
+                    
+                    # 使用CoinGecko API獲取市值數據
+                    url = f"https://api.coingecko.com/api/v3/coins/{base_symbol}"
+                    logger.info(f"請求CoinGecko API獲取{base_symbol}的市值數據: {url}")
+                    
+                    response = requests.get(url)
+                    if response.status_code == 200:
+                        coin_data = response.json()
+                        if 'market_data' in coin_data and 'market_cap' in coin_data['market_data']:
+                            market_cap = coin_data['market_data']['market_cap'].get('usd', 0)
+                            market_caps[symbol] = market_cap
+                            logger.info(f"獲取到{symbol}的市值: ${market_cap:,.2f}")
+                        else:
+                            logger.warning(f"無法獲取{symbol}的市值數據: API返回數據結構不符")
+                            # 使用交易額作為備用
+                            if 'turnover' in factor_scores.columns:
+                                symbol_data = factor_scores[factor_scores['symbol'] == symbol]
+                                if not symbol_data.empty and pd.notna(symbol_data['turnover'].values[0]):
+                                    estimated_cap = symbol_data['turnover'].values[0] * 10
+                                    market_caps[symbol] = estimated_cap
+                                    logger.info(f"使用估算的{symbol}市值: ${estimated_cap:,.2f}")
+                    elif response.status_code == 429:  # Too Many Requests
+                        logger.warning(f"CoinGecko API限流，等待1秒后重試")
+                        time.sleep(1)
+                        # 使用交易額作為備用
+                        if 'turnover' in factor_scores.columns:
+                            symbol_data = factor_scores[factor_scores['symbol'] == symbol]
+                            if not symbol_data.empty and pd.notna(symbol_data['turnover'].values[0]):
+                                estimated_cap = symbol_data['turnover'].values[0] * 10
+                                market_caps[symbol] = estimated_cap
+                                logger.info(f"由於API限流，使用估算的{symbol}市值: ${estimated_cap:,.2f}")
+                    else:
+                        logger.warning(f"無法獲取{symbol}的市值數據: HTTP狀態碼 {response.status_code}")
+                        # 使用交易額作為備用
+                        if 'turnover' in factor_scores.columns:
+                            symbol_data = factor_scores[factor_scores['symbol'] == symbol]
+                            if not symbol_data.empty and pd.notna(symbol_data['turnover'].values[0]):
+                                estimated_cap = symbol_data['turnover'].values[0] * 10
+                                market_caps[symbol] = estimated_cap
+                                logger.info(f"由於API錯誤，使用估算的{symbol}市值: ${estimated_cap:,.2f}")
+                    
+                    # 避免API限流，適當延遲
+                    time.sleep(0.2)
+                    
+                except Exception as e:
+                    logger.error(f"獲取{symbol}市值時發生錯誤: {str(e)}")
+                    # 使用交易額作為備用
+                    if 'turnover' in factor_scores.columns:
+                        symbol_data = factor_scores[factor_scores['symbol'] == symbol]
+                        if not symbol_data.empty and pd.notna(symbol_data['turnover'].values[0]):
+                            estimated_cap = symbol_data['turnover'].values[0] * 10
+                            market_caps[symbol] = estimated_cap
+                            logger.info(f"由於異常，使用估算的{symbol}市值: ${estimated_cap:,.2f}")
             
-            # 获取最新的市场数据
-            latest_market = market_data.sort_values('timestamp', ascending=False)
-            latest_market = latest_market.drop_duplicates('symbol', keep='first')
+            # 創建市值DataFrame
+            market_cap_df = pd.DataFrame([
+                {'symbol': symbol, 'market_cap': cap}
+                for symbol, cap in market_caps.items()
+            ])
             
-            # 如果市场数据中已有turnover，则直接使用，否则计算
-            if 'turnover' not in latest_market.columns:
-                latest_market['turnover'] = latest_market[price_col] * latest_market[volume_col]
-            
-            # 合并到因子评分表 - 只合并我们需要的列
-            latest_market_subset = latest_market[['symbol', 'turnover']].copy()
-            
-            # 仅合并turnover列，避免与之前合并的列冲突
-            if 'turnover' not in factor_scores.columns:
+            # 合併市值數據到因子評分表
+            if not market_cap_df.empty:
                 factor_scores = pd.merge(
                     factor_scores,
-                    latest_market_subset,
+                    market_cap_df,
                     on='symbol',
                     how='left'
                 )
-                
-            # 打印调试信息
-            for idx, row in factor_scores.iterrows():
-                logger.info(f"市值数据 - 交易对: {row['symbol']}, 成交额: {row.get('turnover', 0)}")
-            
-            # 粗略估计市值：日交易量的10倍
-            factor_scores['estimated_market_cap'] = factor_scores['turnover'] * 10
+            else:
+                logger.warning("無法從CoinGecko獲取市值數據，將使用備用方法")
+                if 'turnover' in factor_scores.columns:
+                    factor_scores['market_cap'] = factor_scores['turnover'] * 10
+                else:
+                    logger.error("無法估算市值，因為turnover列不存在")
+                    factor_scores['market_cap'] = 0
             
             # 填充缺失值
-            factor_scores['estimated_market_cap'] = factor_scores['estimated_market_cap'].fillna(0)
+            factor_scores['market_cap'] = factor_scores['market_cap'].fillna(0)
             
-            # 计算市值分数：优先选择小市值币种
-            max_market_cap = 1000000000  # 10亿美元
-            factor_scores['market_cap_score'] = factor_scores['estimated_market_cap'].apply(
+            # 計算市值分數：優先選擇小市值幣種
+            max_market_cap = 1000000000  # 10億美元
+            factor_scores['market_cap_score'] = factor_scores['market_cap'].apply(
                 lambda x: 1 if pd.notna(x) and x > 0 and x < max_market_cap else 0.2  # 小市值得高分，大市值得低分
             )
             
-            # 检查是否成功计算了市值分数
+            # 檢查是否成功計算了市值分數
             if 'market_cap_score' not in factor_scores.columns:
-                logger.error("市值分数计算失败，列不存在")
+                logger.error("市值分數計算失敗，列不存在")
                 factor_scores['market_cap_score'] = 0
             
-            # 输出分析结果
+            # 輸出分析結果
             small_cap_count = (factor_scores['market_cap_score'] >= 1).sum()
             large_cap_count = (factor_scores['market_cap_score'] < 1).sum()
-            logger.info(f"完成市值分析，有 {small_cap_count} 个小市值交易对，{large_cap_count} 个大市值交易对")
+            logger.info(f"完成市值分析，有 {small_cap_count} 個小市值交易對，{large_cap_count} 個大市值交易對")
             
             return factor_scores
             
         except Exception as e:
-            logger.error(f"分析市值因子失败: {str(e)}")
+            logger.error(f"分析市值因子失敗: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             factor_scores['market_cap_score'] = 0
@@ -564,6 +603,8 @@ class FactorAnalyzer:
         分析代幣解鎖進度
         
         策略要求：考慮解鎖進度和流通的籌碼
+
+        解鎖進度如何量化？
         
         Args:
             factor_scores: 因子評分DataFrame
