@@ -213,10 +213,20 @@ class FactorAnalyzer:
                 logger.info(f"有 {zero_rates} 个交易对的资金费率为0，将不参与交易")
                 factor_scores.loc[factor_scores['funding_rate'] == 0, 'funding_rate_score'] = -1
             
+            # 对得分不为0的标的分数进行正则化
+            valid_scores = factor_scores['funding_rate_score'] > 0
+            if valid_scores.sum() > 0:
+                max_funding = factor_scores.loc[valid_scores, 'funding_rate'].max()
+                min_funding = factor_scores.loc[valid_scores, 'funding_rate'].min()
+                if max_funding > min_funding:
+                    factor_scores.loc[valid_scores, 'funding_rate_score'] = (
+                        (factor_scores.loc[valid_scores, 'funding_rate'] - min_funding) / 
+                        (max_funding - min_funding)
+                    )
+            
             qualified_count = (factor_scores['funding_rate_score'] > 0).sum()
             na_count = (factor_scores['funding_rate_score'] == -1).sum()
             logger.info(f"完成資金費率分析，有 {qualified_count} 個交易對的資金費率符合要求，{na_count} 個交易對的資金費率為NA或0")
-            
             # 删除临时列
             if 'base_symbol' in factor_scores.columns:
                 factor_scores = factor_scores.drop('base_symbol', axis=1)
@@ -277,7 +287,7 @@ class FactorAnalyzer:
             latest_market = market_data.sort_values('timestamp', ascending=False)
             latest_market = latest_market.drop_duplicates('symbol', keep='first')
             
-            # 添加成交額列
+            # 添加日成交額 (turnover)列
             latest_market['turnover'] = latest_market[price_col] * latest_market[volume_col]
             
             # 將流動性數據合並到因子評分表
@@ -291,11 +301,18 @@ class FactorAnalyzer:
                           f"成交量: {row.get(volume_col, 0)}, "
                           f"成交額: {row.get('turnover', 0)}")
             
-            # 計算流動性分數 - 確保有足夠的日成交額
+            # 計算流動性分數 - 基於日成交額的歸一化評分
             min_turnover = 1000000  # 最低日成交額：100萬美元
-            factor_scores['liquidity_score'] = factor_scores['turnover'].apply(
-                lambda x: 1 if pd.notna(x) and x >= min_turnover else 0
-            )
+            
+            # 先標記不符合最低要求的交易對
+            factor_scores['liquidity_score'] = 0
+            
+            # 對於符合最低要求的交易對，進行歸一化評分
+            qualified_symbols = factor_scores[factor_scores['turnover'] >= min_turnover].index
+            if len(qualified_symbols) > 0:
+                max_turnover = factor_scores.loc[qualified_symbols, 'turnover'].max()
+                if max_turnover > 0:  # 防止除以零
+                    factor_scores.loc[qualified_symbols, 'liquidity_score'] = factor_scores.loc[qualified_symbols, 'turnover'] / max_turnover
             
             # 檢查是否成功計算了流動性分數
             if 'liquidity_score' not in factor_scores.columns:
@@ -318,6 +335,8 @@ class FactorAnalyzer:
     def _analyze_pump_patterns(self, factor_scores, market_data):
         """
         分析拉盤模式因子
+        是否拉過盤？ 問題是，如何定量判斷是否拉過盤？
+        輸出是0或0.5（拉過一次）1（拉過兩次以上？）
         
         Args:
             factor_scores: 因子評分DataFrame

@@ -56,7 +56,7 @@ class TradingSystem:
                 # 獲取交易所所有符合USDT計價的交易對
                 try:
                     # 從交易所獲取所有可用的USDT交易對
-                    test_mode = False
+                    test_mode = True
                     if test_mode:
                         # 仅使用4个主要交易对进行测试
                         available_markets = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT']
