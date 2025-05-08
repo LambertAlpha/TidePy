@@ -251,19 +251,307 @@ class DataCollector:
     def get_token_info(self, symbols=None):
         """
         獲取代幣基本信息（流通量、解鎖進度等）
-        
-        这个功能可能需要从其他API获取，如CoinMarketCap, CoinGecko等
+        使用CoinMarketCap API获取代币信息，包括解锁进度、供应量和赛道分类
         
         Args:
             symbols: 需要獲取信息的交易對列表
             
         Returns:
-            DataFrame: 包含代幣信息的DataFrame
+            DataFrame: 包含代幣信息的DataFrame，包括：
+                - symbol: 代币符号
+                - name: 代币名称
+                - total_supply: 总供应量
+                - circulating_supply: 流通量
+                - unlock_progress: 解锁进度 (0-100%)
+                - next_unlock_date: 下次解锁日期
+                - next_unlock_amount: 下次解锁数量
+                - sector: 代币所属赛道/类别
+                - updated_at: 数据更新时间戳
         """
-        # 这里需要实现通过第三方API获取代币信息的功能
-        # 由于CCXT不提供这些信息，此处为示例结构
-        logger.info("獲取代幣信息功能需從第三方API實現")
-        return pd.DataFrame()
+        try:
+            import os
+            import requests
+            from datetime import datetime
+            import time
+            import json
+            from requests.adapters import HTTPAdapter
+            from requests.packages.urllib3.util.retry import Retry
+            
+            # 获取CMC API密钥
+            api_key = os.environ.get('CMC_API_KEY')
+            if not api_key:
+                logger.error("缺少CoinMarketCap API密钥，请在.env文件中设置CMC_API_KEY")
+                return pd.DataFrame()
+            
+            # 如果没有指定symbols，则返回空DataFrame
+            if not symbols:
+                logger.warning("未指定交易對列表，無法獲取代幣信息")
+                return pd.DataFrame()
+            
+            # 创建具有重试功能的session
+            session = requests.Session()
+            retry = Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503, 504],
+                respect_retry_after_header=True
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            # 准备结果列表和API请求头
+            token_info_list = []
+            headers = {
+                'X-CMC_PRO_API_KEY': api_key,
+                'Accept': 'application/json',
+                'Accept-Encoding': 'deflate, gzip'
+            }
+            
+            # 提取基础货币符号（去除/USDT等后缀）
+            base_symbols = [symbol.split('/')[0] for symbol in symbols]
+            
+            # 批量请求ID映射 - 最多100个符号一次
+            all_ids = {}
+            all_names = {}
+            all_slugs = {}
+            
+            # 分批处理符号，每批最多100个
+            batch_size = 100
+            for i in range(0, len(base_symbols), batch_size):
+                batch_symbols = base_symbols[i:i+batch_size]
+                
+                # 步骤1：批量获取货币ID
+                logger.info(f"批量请求CoinMarketCap获取{len(batch_symbols)}个符号的ID映射")
+                map_url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map"
+                map_params = {
+                    'symbol': ','.join(batch_symbols)
+                }
+                
+                try:
+                    map_response = session.get(map_url, params=map_params, headers=headers)
+                    map_data = map_response.json()
+                    
+                    if map_response.status_code != 200:
+                        error_code = map_data.get('status', {}).get('error_code', 0)
+                        error_message = map_data.get('status', {}).get('error_message', 'Unknown error')
+                        logger.warning(f"批量获取符号ID失败，状态码: {map_response.status_code}, 错误码: {error_code}, 错误信息: {error_message}")
+                        continue
+                    
+                    if 'data' not in map_data:
+                        logger.warning(f"批量获取符号ID返回数据格式异常")
+                        continue
+                    
+                    # 处理返回的数据，按符号分组
+                    for item in map_data['data']:
+                        symbol = item['symbol']
+                        # 使用市值最高的币种（默认排序）
+                        if symbol not in all_ids:
+                            all_ids[symbol] = item['id']
+                            all_names[symbol] = item['name']
+                            all_slugs[symbol] = item['slug']
+                    
+                    # 避免API限流
+                    time.sleep(1.0)
+                    
+                except Exception as e:
+                    logger.error(f"批量获取符号ID时发生错误: {str(e)}")
+                    continue
+            
+            # 分批获取代币详细信息
+            batch_ids = []
+            id_to_symbols = {}
+            
+            # 准备ID批次
+            for symbol, cmc_id in all_ids.items():
+                batch_ids.append(str(cmc_id))
+                id_to_symbols[str(cmc_id)] = symbol
+            
+            # 每批处理最多100个ID
+            info_results = {}
+            quotes_results = {}
+            
+            for i in range(0, len(batch_ids), batch_size):
+                batch_chunk = batch_ids[i:i+batch_size]
+                
+                # 步骤2：批量获取代币详细信息
+                logger.info(f"批量请求CoinMarketCap获取{len(batch_chunk)}个代币的详细信息")
+                info_url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/info"
+                info_params = {
+                    'id': ','.join(batch_chunk),
+                    'aux': 'urls,logo,description,tags,platform,date_added,notice,status'
+                }
+                
+                try:
+                    info_response = session.get(info_url, params=info_params, headers=headers)
+                    info_data = info_response.json()
+                    
+                    if info_response.status_code != 200:
+                        error_code = info_data.get('status', {}).get('error_code', 0)
+                        error_message = info_data.get('status', {}).get('error_message', 'Unknown error')
+                        logger.warning(f"批量获取代币详细信息失败，状态码: {info_response.status_code}, 错误码: {error_code}, 错误信息: {error_message}")
+                    else:
+                        if 'data' in info_data:
+                            info_results.update(info_data['data'])
+                    
+                    # 避免API限流
+                    time.sleep(1.0)
+                    
+                except Exception as e:
+                    logger.error(f"批量获取代币详细信息时发生错误: {str(e)}")
+                
+                # 步骤3：批量获取代币报价信息（包含供应量数据）
+                logger.info(f"批量请求CoinMarketCap获取{len(batch_chunk)}个代币的报价信息")
+                quotes_url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest"
+                quotes_params = {
+                    'id': ','.join(batch_chunk),
+                    'aux': 'circulating_supply,total_supply,max_supply'
+                }
+                
+                try:
+                    quotes_response = session.get(quotes_url, params=quotes_params, headers=headers)
+                    quotes_data = quotes_response.json()
+                    
+                    if quotes_response.status_code != 200:
+                        error_code = quotes_data.get('status', {}).get('error_code', 0)
+                        error_message = quotes_data.get('status', {}).get('error_message', 'Unknown error')
+                        logger.warning(f"批量获取代币报价信息失败，状态码: {quotes_response.status_code}, 错误码: {error_code}, 错误信息: {error_message}")
+                    else:
+                        if 'data' in quotes_data:
+                            quotes_results.update(quotes_data['data'])
+                    
+                    # 避免API限流
+                    time.sleep(1.0)
+                    
+                except Exception as e:
+                    logger.error(f"批量获取代币报价信息时发生错误: {str(e)}")
+                    
+            # 逐个获取解锁进度信息（目前API不支持批量获取解锁信息）
+            for symbol in base_symbols:
+                try:
+                    if symbol not in all_ids:
+                        logger.warning(f"无法为{symbol}找到对应的CoinMarketCap ID")
+                        continue
+                    
+                    cmc_id = all_ids[symbol]
+                    name = all_names.get(symbol, symbol)
+                    
+                    # 获取解锁信息
+                    unlock_progress = 0.0
+                    next_unlock_date = None
+                    next_unlock_amount = 0.0
+                    
+                    # 获取详细信息
+                    total_supply = 0.0
+                    circulating_supply = 0.0
+                    sector = ""
+                    market_cap = 0.0
+                    
+                    # 从详细信息中获取数据
+                    str_id = str(cmc_id)
+                    
+                    # 从info_results获取代币基本信息
+                    if str_id in info_results:
+                        token_data = info_results[str_id]
+                        # 获取代币类别/赛道
+                        if 'category' in token_data:
+                            sector = token_data['category']
+                        elif 'tags' in token_data and token_data['tags']:
+                            sector = token_data['tags'][0]  # 使用第一个标签作为赛道
+                    
+                    # 从quotes_results获取准确的供应量数据
+                    if str_id in quotes_results:
+                        quotes_data = quotes_results[str_id]
+                        total_supply = quotes_data.get('total_supply', 0.0) or 0.0
+                        circulating_supply = quotes_data.get('circulating_supply', 0.0) or 0.0
+                        max_supply = quotes_data.get('max_supply', 0.0) or 0.0
+                        market_cap = quotes_data.get('quote', {}).get('USD', {}).get('market_cap', 0.0) or 0.0
+                    
+                    # 尝试获取解锁进度信息
+                    try:
+                        unlocks_url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/unlock-calendar"
+                        unlocks_params = {'id': cmc_id}
+                        
+                        logger.info(f"请求CoinMarketCap获取{symbol}的解锁信息 (ID: {cmc_id})")
+                        unlocks_response = session.get(unlocks_url, params=unlocks_params, headers=headers)
+                        
+                        # 检查响应状态码
+                        if unlocks_response.status_code == 200:
+                            unlocks_data = unlocks_response.json()
+                            if 'data' in unlocks_data and 'tokenUnlockEvents' in unlocks_data['data']:
+                                # 排序解锁事件
+                                events = unlocks_data['data']['tokenUnlockEvents']
+                                now = datetime.now()
+                                
+                                # 计算已解锁比例
+                                total_unlocked = sum(event['percentage'] for event in events if datetime.fromtimestamp(event['date']/1000) < now)
+                                unlock_progress = min(100.0, total_unlocked)
+                                
+                                # 查找下一个解锁事件
+                                future_events = [event for event in events if datetime.fromtimestamp(event['date']/1000) > now]
+                                future_events.sort(key=lambda x: x['date'])
+                                
+                                if future_events:
+                                    next_event = future_events[0]
+                                    next_unlock_date = datetime.fromtimestamp(next_event['date']/1000).isoformat()
+                                    next_unlock_amount = next_event['tokenAmount']
+                        elif unlocks_response.status_code == 404:
+                            # 没有解锁日历是正常情况，对一些币种来说
+                            logger.info(f"{symbol}没有解锁日历信息 (404 Not Found)")
+                        else:
+                            # 处理其他错误
+                            unlocks_data = unlocks_response.json()
+                            error_code = unlocks_data.get('status', {}).get('error_code', 0)
+                            error_message = unlocks_data.get('status', {}).get('error_message', 'Unknown error')
+                            logger.warning(f"获取{symbol}的解锁信息失败，状态码: {unlocks_response.status_code}, 错误码: {error_code}, 错误信息: {error_message}")
+                    
+                    except Exception as e:
+                        logger.warning(f"获取{symbol}的解锁信息时发生错误: {str(e)}")
+                    
+                    # 避免API限流
+                    time.sleep(0.5)
+                    
+                    # 获取原始交易对符号，以匹配返回结果
+                    original_symbol = next((s for s in symbols if s.split('/')[0] == symbol), f"{symbol}/USDT")
+                    
+                    # 添加到结果列表
+                    token_info_list.append({
+                        'symbol': original_symbol,
+                        'name': name,
+                        'total_supply': total_supply,
+                        'circulating_supply': circulating_supply,
+                        'max_supply': max_supply if 'max_supply' in locals() else 0.0,
+                        'market_cap': market_cap if 'market_cap' in locals() else 0.0,
+                        'unlock_progress': unlock_progress,
+                        'next_unlock_date': next_unlock_date,
+                        'next_unlock_amount': next_unlock_amount,
+                        'sector': sector,
+                        'updated_at': pd.Timestamp.utcnow()
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"处理{symbol}的代币信息时发生错误: {str(e)}")
+            
+            # 创建DataFrame
+            result_df = pd.DataFrame(token_info_list)
+            
+            # 确保DataFrame不为空并包含所有必要的列
+            if not result_df.empty:
+                required_columns = ['symbol', 'name', 'total_supply', 'circulating_supply', 
+                                    'unlock_progress', 'next_unlock_date', 'next_unlock_amount', 
+                                    'sector', 'updated_at']
+                for col in required_columns:
+                    if col not in result_df.columns:
+                        result_df[col] = None
+            
+            logger.info(f"成功获取{len(result_df)}个代币的信息")
+            return result_df
+            
+        except Exception as e:
+            logger.error(f"获取代币信息失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return pd.DataFrame()
     
     def analyze_liquidity(self, market_data=None):
         """

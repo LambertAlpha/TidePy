@@ -56,10 +56,10 @@ class TradingSystem:
                 # 獲取交易所所有符合USDT計價的交易對
                 try:
                     # 從交易所獲取所有可用的USDT交易對
-                    test_mode = True
+                    test_mode = False
                     if test_mode:
                         # 仅使用4个主要交易对进行测试
-                        available_markets = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT']
+                        available_markets = ['BTC/USDT', 'OM/USDT', 'SUI/USDT', 'ADA/USDT']
                         logger.info(f"测试模式：使用 {len(available_markets)} 个指定的USDT交易对")
                     else:
                         available_markets = self.data_collector.get_available_symbols(quote_currency='USDT', limit=300)

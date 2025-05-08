@@ -150,9 +150,9 @@ class FactorAnalyzer:
             latest_funding = latest_funding.drop_duplicates('base_symbol', keep='first')
             
             # 输出有效的资金费率数据，便于检查
-            for idx, row in latest_funding.iterrows():
+            '''for idx, row in latest_funding.iterrows():
                 if not np.isnan(row['funding_rate']):
-                    logger.info(f"交易对 {row['symbol']} (基础符号: {row['base_symbol']}) 的资金费率为 {row['funding_rate']}")
+                    logger.info(f"交易对 {row['symbol']} (基础符号: {row['base_symbol']}) 的资金费率为 {row['funding_rate']}")'''
             
             # 合并资金费率数据到因子评分表
             logger.info(f"开始合并资金费率数据，因子评分行数: {len(factor_scores)}, 资金费率行数: {len(latest_funding)}")
@@ -337,6 +337,8 @@ class FactorAnalyzer:
         分析拉盤模式因子
         是否拉過盤？ 問題是，如何定量判斷是否拉過盤？
         輸出是0或0.5（拉過一次）1（拉過兩次以上？）
+
+        能不能將現在價格回溯到這個幣幣安合約後的第二天收盤價或者一個月前的價格對比？
         
         Args:
             factor_scores: 因子評分DataFrame
@@ -490,14 +492,31 @@ class FactorAnalyzer:
             symbols = factor_scores['symbol'].unique().tolist()
             market_caps = {}
             
+            # CoinGecko API 的币种ID映射
+            # 有些币的ID和币名不一致，需要特殊处理
+            coingecko_id_map = {
+                'btc': 'bitcoin',
+                'eth': 'ethereum',
+                'bnb': 'binancecoin',
+                'ada': 'cardano',
+                'xrp': 'ripple',
+                'doge': 'dogecoin',
+                'sol': 'solana',
+                'om': 'mantra-dao',  # 注意，这需要根据实际情况调整
+                # 添加更多映射...
+            }
+            
             for symbol in symbols:
                 try:
                     # 提取幣種名稱（去掉/USDT等後綴）
                     base_symbol = symbol.split('/')[0].lower()
                     
+                    # 使用映射表获取正确的CoinGecko ID
+                    coin_id = coingecko_id_map.get(base_symbol, base_symbol)
+                    
                     # 使用CoinGecko API獲取市值數據
-                    url = f"https://api.coingecko.com/api/v3/coins/{base_symbol}"
-                    logger.info(f"請求CoinGecko API獲取{base_symbol}的市值數據: {url}")
+                    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+                    logger.info(f"請求CoinGecko API獲取{base_symbol}的市值數據 (ID: {coin_id}): {url}")
                     
                     response = requests.get(url)
                     if response.status_code == 200:
@@ -654,6 +673,8 @@ class FactorAnalyzer:
         分析代幣所屬賽道
         
         策略要求：賽道篩選，不空DeFi
+
+        哪裏可以獲取賽道數據？
         
         Args:
             factor_scores: 因子評分DataFrame
@@ -738,9 +759,9 @@ class FactorAnalyzer:
                 factor_scores['funding_rate_score'] * 0.4 +
                 factor_scores['liquidity_score'] * 0.2 +
                 factor_scores['market_cap_score'] * 0.2 +
-                factor_scores['pump_pattern_score'] * 0.2 +  # 增加拉盤模式的權重
-                factor_scores['unlock_progress_score'] * 0.0 +  # 降低解鎖進度的權重
-                factor_scores['sector_score'] * 0.0  # 降低賽道的權重
+                factor_scores['pump_pattern_score'] * 0.2 +  # 拉盤模式的權重
+                factor_scores['unlock_progress_score'] * 0.4  # 解鎖進度的權重
+                #factor_scores['sector_score'] * 0.0  # 賽道的權重
             )
             
             # 資金費率是NA（-1）的交易對總分設為0，不參與交易
